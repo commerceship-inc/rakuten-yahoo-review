@@ -312,7 +312,6 @@
             <span style="font-size:11px;color:#8E8E93">※ Yahoo!はZipファイルでダウンロードされます。解凍・展開してからCSVをアップロードしてください</span>
           </div>
         </div>
-        <input type="file" id="csvInput" accept=".csv,.txt" multiple style="position:absolute;width:1px;height:1px;opacity:0;overflow:hidden">
       </div>
       <div id="gdc-drive" class="gdc-hd">
         <div class="gdc-panel">
@@ -330,6 +329,8 @@
         </div>
       </div>
     </div>
+    <!-- ファイル入力はgdc-rootの外に配置（display:none親の影響を受けないようにする） -->
+    <input type="file" id="csvInput" accept=".csv,.txt" multiple style="position:absolute;width:1px;height:1px;opacity:0;overflow:hidden">
     <script src="https://accounts.google.com/gsi/client" async defer></script>
     <!-- 読み込みステータス（ファイル追加読み込み対応） -->
     <div class="upload-status" id="uploadStatus" style="display:none">
@@ -472,6 +473,7 @@
   listFiles:function(fid){return dl("'"+fid+"' in parents and trashed=false and mimeType!='application/vnd.google-apps.folder'").then(function(r){return r.files||[]})},
   listSubFolders:function(fid){return dl("'"+fid+"' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false").then(function(r){return r.files||[]})},
   readFile:function(fid){return dt(fid)},
+  readFileAsBuffer:function(fid){return fetch('https://www.googleapis.com/drive/v3/files/'+fid+'?alt=media',{headers:{'Authorization':'Bearer '+token}}).then(function(r){return r.arrayBuffer()})},
   backToFolders:function(){showRoot()},
   reset:function(){ss=null;sf=null;path=[];if(token)showRoot();else sv('gdc-login')},
   getStore:function(){return ss},
@@ -1663,7 +1665,9 @@
     var newRows = [];
     for(var i = 0; i < csvs.length; i++){
       fc.innerHTML = '<div class="gdc-info">\uD83D\uDCC2 読み込み中... (' + (i+1) + '/' + csvs.length + ') ' + csvs[i].name + '</div>';
-      var text = await GDrive.readFile(csvs[i].id);
+      // Shift_JIS対応: ArrayBufferとして取得し、TextDecoderでデコード
+      var buf = await GDrive.readFileAsBuffer(csvs[i].id);
+      var text = new TextDecoder('shift_jis').decode(buf);
       var rows = parseCSV(text);
       newRows = newRows.concat(rows);
       loadedFiles.push(csvs[i].name);
