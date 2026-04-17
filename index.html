@@ -1,4 +1,4 @@
-<!-- review-dashboard v2 | updated: 2026-04-14 | GDrive連携追加 -->
+<!-- review-dashboard v2 | updated: 2026-04-14 | 商品ID解析ロジック追加 -->
 <!DOCTYPE html>
 <html lang="ja">
 <head>
@@ -558,6 +558,8 @@
     type:        ['レビュータイプ','レビュー種別','type','種別','区分'],
     productName: ['商品名','商品タイトル','product_name','product_title','商品','タイトル','品名'],
     reviewDate:  ['レビュー日','投稿日','投稿時間','レビュー投稿日','日付','評価日','date','review_date','投稿日時','レビュー日時','作成日'],
+    reviewUrl:   ['レビュー詳細URL','レビューURL','review_url','URL'],
+    productCode: ['商品コード','product_code','商品ID','item_code'],
   };
 
 
@@ -570,6 +572,12 @@
   let colType    = null;
   let colProduct = null;
   let colDate    = null;
+  let colUrl     = null;   // 楽天「レビュー詳細URL」列
+  let colCode    = null;   // Yahoo!「商品コード」列
+
+  // 商品IDベースのグルーピング用マップ
+  // { 商品ID: { name: 最新の商品名, count: レビュー件数 } }
+  let productIdMap = {};
 
   // 複数ファイル管理用
   let loadedFiles = [];       // 読み込んだファイル名の一覧
@@ -683,6 +691,8 @@
       if (!colType)    colType    = findColumn(sample, 'type');
       if (!colProduct) colProduct = findColumn(sample, 'productName');
       if (!colDate)    colDate    = findColumn(sample, 'reviewDate');
+      if (!colUrl)     colUrl     = findColumn(sample, 'reviewUrl');
+      if (!colCode)    colCode    = findColumn(sample, 'productCode');
 
       // 日付列フォールバック
       if (!colDate) {
@@ -742,6 +752,23 @@
 
     dedupRemovedCount = totalRawCount - parsedData.length;
 
+    // 各行に商品ID（_productId）を付与し、商品IDマップを構築
+    productIdMap = {};
+    parsedData.forEach(row => {
+      row._productId = getProductId(row);
+      if (row._productId) {
+        const name = (colProduct ? (row[colProduct] || '') : '').trim();
+        if (!productIdMap[row._productId]) {
+          productIdMap[row._productId] = { name: name, count: 0 };
+        }
+        productIdMap[row._productId].count++;
+        // 商品名が更新されていれば最新の名前を保持（空でない方を採用）
+        if (name && (!productIdMap[row._productId].name || name.length > 0)) {
+          productIdMap[row._productId].name = name;
+        }
+      }
+    });
+
     // UI更新
     uploadArea.classList.add('loaded');
     document.querySelector('.gdc-root').style.display = 'none';
@@ -796,27 +823,58 @@
     return short || name;
   }
 
+  /**
+   * 商品IDを取得する関数
+   * 楽天：レビュー詳細URLから商品ID（例: 412308_10000009）を抽出
+   * Yahoo!：商品コード列の値をそのまま使用
+   * どちらもない場合：商品名をIDとして使用（従来互換）
+   */
+  function getProductId(row) {
+    // 楽天：URLから商品IDを抽出
+    if (colUrl) {
+      var url = (row[colUrl] || '').trim();
+      if (url) {
+        var m = url.match(new RegExp('/item/\\d+/(\\d+_\\d+)/'));
+        if (m) return 'R_' + m[1];  // R_ = 楽天プレフィックス
+      }
+    }
+    // Yahoo!：商品コードをそのまま使用
+    if (colCode) {
+      var code = (row[colCode] || '').trim();
+      if (code) return 'Y_' + code;  // Y_ = Yahoo!プレフィックス
+    }
+    // フォールバック：商品名をIDとして使用
+    if (colProduct) {
+      var name = (row[colProduct] || '').trim();
+      if (name) return 'N_' + name;  // N_ = 商品名プレフィックス
+    }
+    return '';
+  }
+
+
   function buildProductSelector() {
     productSelect.innerHTML = '<option value="__ALL__">すべての商品</option>';
-    if (!colProduct) {
+    if (!colProduct && !colUrl && !colCode) {
       productSelect.disabled = true;
       productCount.textContent = '（商品名列が見つかりません）';
       return;
     }
     productSelect.disabled = false;
-    const names = [...new Set(parsedData.map(r => (r[colProduct] || '').trim()).filter(Boolean))];
-    names.sort();
 
-    names.forEach(name => {
-      const cnt = parsedData.filter(r => (r[colProduct] || '').trim() === name).length;
+    // 商品IDマップからプルダウンを生成（件数の多い順にソート）
+    const ids = Object.keys(productIdMap).sort((a, b) => productIdMap[b].count - productIdMap[a].count);
+
+    ids.forEach(id => {
+      const info = productIdMap[id];
+      if (!info.name) return;  // 商品名が空（ショップレビュー等）はスキップ
       const opt = document.createElement('option');
-      opt.value = name;  // valueは元の商品名のまま（フィルタリング用）
-      const display = shortProductName(name);
+      opt.value = id;  // valueは商品ID（R_412308_10000009, Y_oomugi3000 等）
+      const display = shortProductName(info.name);
       const truncated = display.length > 50 ? display.slice(0, 50) + '…' : display;
-      opt.textContent = `${truncated}（${cnt}件）`;
+      opt.textContent = `${truncated}（${info.count}件）`;
       productSelect.appendChild(opt);
     });
-    productCount.textContent = `${names.length} 商品`;
+    productCount.textContent = `${ids.filter(id => productIdMap[id].name).length} 商品`;
   }
 
 
@@ -909,11 +967,11 @@
   // ■ ダッシュボード描画（メイン）
   // ======================================================
   function renderDashboard() {
-    /* 選択中の商品でフィルタリング */
+    /* 選択中の商品IDでフィルタリング */
     const selected = productSelect.value;
     const data = selected === '__ALL__'
       ? parsedData
-      : parsedData.filter(r => (r[colProduct] || '').trim() === selected);
+      : parsedData.filter(r => r._productId === selected);
 
     // --- ① サマリー ---
     const allRatings = data.map(r => parseFloat(r[colRating])).filter(v => v >= 1 && v <= 5);
